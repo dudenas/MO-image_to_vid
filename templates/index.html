@@ -81,7 +81,8 @@
             </button>
 
             <h1 class="text-4xl font-bold text-center text-gray-800 dark:text-white mb-8">PNG Sequence to Video
-                Converter</h1>
+                Converter <span class="text-sm text-gray-500 dark:text-gray-400">v{{version}}</span>
+            </h1>
 
             <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
                 <form id="uploadForm" class="space-y-6">
@@ -457,6 +458,37 @@
             }
         }
 
+        // Add this function to start progress polling
+        function startProgressPolling() {
+            const pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch('/progress');
+                    const data = await response.json();
+                    const percent = data.progress;
+
+                    // Update progress bar and text
+                    progressBar.style.width = `${percent}%`;
+                    if (percent < 90) {
+                        progressText.textContent = `Processing frames... ${Math.round(percent)}%`;
+                    } else if (percent < 95) {
+                        progressText.textContent = `Encoding video... ${Math.round(percent)}%`;
+                    } else if (percent < 100) {
+                        progressText.textContent = `Finalizing... ${Math.round(percent)}%`;
+                    }
+
+                    if (percent >= 100) {
+                        clearInterval(pollInterval);
+                        progressText.textContent = 'Download starting...';
+                    }
+                } catch (error) {
+                    console.error('Error polling progress:', error);
+                }
+            }, 1000); // Poll every second
+
+            return pollInterval;
+        }
+
+        // Modify your form submit handler
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
             console.log('Form submitted');
@@ -481,99 +513,57 @@
 
                 progress.classList.remove('hidden');
                 form.classList.add('opacity-50', 'pointer-events-none');
-                progressText.textContent = 'Preparing files...';
+                progressText.textContent = 'Starting...';
                 progressBar.style.width = '0%';
 
-                // Create a new FormData with all files at once
+                // Start progress polling
+                const pollInterval = startProgressPolling();
+
+                // Create FormData and send request
                 const formData = new FormData();
                 files.forEach((file, index) => {
-                    // Add index to filename to ensure order is preserved
                     formData.append('files[]', file,
                         `frame_${index.toString().padStart(6, '0')}.png`);
                 });
                 formData.append('format', form.format.value);
-                formData.append('total_files', files.length.toString());
 
-                // Single request with all files
-                const xhr = new XMLHttpRequest();
+                const response = await fetch('/convert', {
+                    method: 'POST',
+                    body: formData
+                });
 
-                // Track upload progress
-                xhr.upload.onprogress = (event) => {
-                    if (event.lengthComputable) {
-                        const percentComplete = (event.loaded / event.total) * 100;
-                        progressBar.style.width = percentComplete + '%';
-                        if (percentComplete === 100) {
-                            progressText.textContent = 'Processing...';
-                        } else {
-                            progressText.textContent =
-                                `Uploading files... ${Math.round(percentComplete)}%`;
-                        }
-                    }
-                };
+                // Clear polling interval
+                clearInterval(pollInterval);
 
-                // Add upload complete handler
-                xhr.upload.onload = () => {
-                    progressText.textContent = 'Processing...';
-                    progressBar.style.width = '100%';
-                };
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Conversion failed');
+                }
 
-                // Handle the response
-                xhr.onload = function () {
-                    if (xhr.status === 200) {
-                        console.log('Processing final response');
-                        progressText.textContent = 'Creating video...';
-                        progressBar.style.width = '100%';
+                // Handle successful response
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `output.${form.format.value}`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                a.remove();
 
-                        const blob = new Blob([xhr.response], {
-                            type: `video/${form.format.value}`
-                        });
-                        const url = window.URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = `output.${form.format.value}`;
-
-                        // Add event listener to track when download starts
-                        a.onclick = () => {
-                            progressText.textContent = 'Download started!';
-                            // Clean up after a short delay
-                            setTimeout(() => {
-                                progress.classList.add('hidden');
-                                form.classList.remove('opacity-50', 'pointer-events-none');
-                                window.URL.revokeObjectURL(url);
-                            }, 1000);
-                        };
-
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-
-                        progressText.textContent = 'Starting download...';
-                    } else {
-                        const error = JSON.parse(xhr.responseText);
-                        throw new Error(error.error || 'Upload failed');
-                    }
-                };
-
-                xhr.onerror = function () {
-                    // Re-enable form on error
-                    form.classList.remove('opacity-50', 'pointer-events-none');
+                progressText.textContent = 'Conversion completed!';
+                setTimeout(() => {
                     progress.classList.add('hidden');
-                    throw new Error('Network error occurred during upload');
-                };
+                    form.classList.remove('opacity-50', 'pointer-events-none');
+                }, 2000);
 
-                // Set up the request
-                xhr.open('POST', '/convert', true);
-                xhr.responseType = 'blob';
-                xhr.send(formData);
-
-                // Remove the Promise wrapper since we're handling everything in onload
-                console.log('Request sent, waiting for response...');
             } catch (error) {
                 console.error('Error:', error);
-                // Re-enable form on error
+                progressText.textContent = `Error: ${error.message}`;
                 form.classList.remove('opacity-50', 'pointer-events-none');
-                progress.classList.add('hidden');
-                alert(error.message || 'An error occurred during conversion');
+                setTimeout(() => {
+                    progress.classList.add('hidden');
+                }, 3000);
             }
         });
     </script>

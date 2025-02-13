@@ -1,2 +1,6 @@
 png-sequence/
 vendor/
+temp/
+__pycache__/
+*.pyc
+.env

@@ -10,121 +10,181 @@ import tempfile
 import shutil
 import logging
 import gc
+from threading import Lock
+import json
+import re
+import platform
+import subprocess
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Version number
+APP_VERSION = "1.2.6"  # Fixed server environment paths
+
+# Configure logging - simpler format without version
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
-# Add FFmpeg to PATH
-vendor_ffmpeg = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vendor/ffmpeg')
-os.environ['PATH'] = f"{vendor_ffmpeg}:{os.environ['PATH']}"
+# Function to safely get FFmpeg version
+def get_ffmpeg_version():
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], 
+                              capture_output=True, 
+                              text=True)
+        first_line = result.stdout.split('\n')[0]
+        return first_line
+    except Exception as e:
+        return f"FFmpeg version check failed: {str(e)}"
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
-app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # Reduce to 256MB max file size
-app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
-app.config['TEMP_FOLDER'] = '/tmp/temp'
+CORS(app)
+app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024
 
-# Ensure upload and temp directories exist
+# Set up temp directories based on environment
+if os.environ.get('FLASK_ENV') == 'development':
+    # Local development - use local temp directory
+    base_temp = os.path.join(os.getcwd(), 'temp')
+    app.config['UPLOAD_FOLDER'] = os.path.join(base_temp, 'uploads')
+    app.config['TEMP_FOLDER'] = os.path.join(base_temp, 'temp')
+else:
+    # Production/Cloud Run - use /tmp
+    app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
+    app.config['TEMP_FOLDER'] = '/tmp/temp'
+
+# Ensure directories exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'png'}
 
+# Global progress tracking
+conversion_progress = 0
+progress_lock = Lock()
+
+def update_progress(percent, message=""):
+    global conversion_progress
+    with progress_lock:
+        conversion_progress = percent
+    logger.info(f"Progress: {percent}% - {message}")
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def cleanup_temp_files():
-    """Clean up temporary files and force garbage collection"""
-    try:
-        shutil.rmtree(app.config['UPLOAD_FOLDER'], ignore_errors=True)
-        shutil.rmtree(app.config['TEMP_FOLDER'], ignore_errors=True)
-        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-        os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
-        gc.collect()  # Force garbage collection
-    except Exception as e:
-        logger.error(f"Error during cleanup: {str(e)}")
-
-@app.before_request
-def before_request():
-    """Clean up before each request"""
-    cleanup_temp_files()
-
 def create_video(image_files, output_path, fps=30, format='mp4'):
     try:
-        logger.info(f"Starting video creation with {len(image_files)} files")
+        # Log FFmpeg version and system info
+        logger.info("=== FFmpeg Info ===")
+        logger.info(f"FFmpeg version: {get_ffmpeg_version()}")
+        logger.info(f"Platform: {platform.system()} {platform.release()}")
+        logger.info(f"Input files: {len(image_files)} PNG files")
+        logger.info(f"Output format: {format}")
         
-        # Get the first image to determine dimensions
+        # Get dimensions
         first_image = Image.open(image_files[0])
         width, height = first_image.size
+        logger.info(f"Image dimensions: {width}x{height}")
         first_image.close()
-        
-        # Reduce image dimensions if too large
-        max_dimension = 1280  # Limit maximum dimension
-        if width > max_dimension or height > max_dimension:
-            scale = max_dimension / max(width, height)
-            width = int(width * scale)
-            height = int(height * scale)
-            logger.info(f"Resizing images to {width}x{height}")
         
         temp_dir = os.path.dirname(output_path)
         frames_dir = os.path.join(temp_dir, 'frames')
         os.makedirs(frames_dir, exist_ok=True)
         
-        # Process images in very small batches
-        batch_size = 5  # Reduced batch size
-        for i in range(0, len(image_files), batch_size):
-            batch = image_files[i:i + batch_size]
-            for j, image_path in enumerate(batch):
-                frame_index = i + j
-                logger.info(f"Processing frame {frame_index + 1}/{len(image_files)}")
-                
-                with Image.open(image_path) as img:
-                    # Resize if needed
-                    if img.size != (width, height):
-                        img = img.resize((width, height), Image.Resampling.LANCZOS)
-                    if img.mode != 'RGB':
-                        img = img.convert('RGB')
-                    frame_path = os.path.join(frames_dir, f'frame_{frame_index:06d}.png')
-                    img.save(frame_path, 'PNG', optimize=True, quality=85)
-                
-                # Clean up memory
-                gc.collect()
+        # Process frames
+        total_frames = len(image_files)
+        for i, image_path in enumerate(sorted(image_files)):
+            progress = (i + 1) / total_frames * 60
+            update_progress(progress, f"Processing frame {i + 1}/{total_frames}")
+            
+            with Image.open(image_path) as img:
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                frame_path = os.path.join(frames_dir, f'frame_{i:06d}.png')
+                img.save(frame_path, 'PNG', optimize=False)
+            gc.collect()
         
-        logger.info("Starting FFmpeg encoding")
+        update_progress(70, "Starting video encoding")
         
-        # FFmpeg encoding with more aggressive compression
-        stream = ffmpeg.input(os.path.join(frames_dir, 'frame_%06d.png'), framerate=fps)
+        # Use FFmpeg with original settings that worked well
+        stream = ffmpeg.input(os.path.join(frames_dir, 'frame_%06d.png'), 
+                            framerate=fps)
         
         if format == 'mp4':
             stream = ffmpeg.output(stream, output_path,
                                 vcodec='libx264',
                                 pix_fmt='yuv420p',
-                                preset='veryfast',  # Even faster encoding
-                                crf=28,  # More compression
-                                movflags='+faststart')
+                                preset='slow',
+                                crf=18,
+                                profile='high',
+                                level='4.0',
+                                movflags='+faststart',
+                                **{
+                                    'color_primaries': 'bt709',
+                                    'color_trc': 'bt709',
+                                    'colorspace': 'bt709',
+                                    'x264-params': (
+                                        'colorprim=bt709:'
+                                        'transfer=bt709:'
+                                        'colormatrix=bt709:'
+                                        'force-cfr=1:'
+                                        'keyint=48:'
+                                        'min-keyint=48:'
+                                        'no-scenecut=1'
+                                    )
+                                })
+            
+            # Log the exact command
+            cmd = ffmpeg.compile(stream)
+            logger.info("=== FFmpeg Command ===")
+            logger.info(' '.join(cmd))
+            
+            # Run FFmpeg and capture output
+            try:
+                out, err = ffmpeg.run(stream, capture_stdout=True, capture_stderr=True)
+                logger.info("=== FFmpeg Output ===")
+                logger.info(err.decode())
+            except ffmpeg.Error as e:
+                logger.error(f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
+                raise
         else:  # mov
             stream = ffmpeg.output(stream, output_path,
                                 vcodec='prores_ks',
-                                pix_fmt='yuv420p',  # Less color data
-                                profile=0,  # Proxy profile
-                                qscale=15)  # More compression
+                                pix_fmt='yuv422p10le',
+                                profile=3,
+                                vendor='apl0',
+                                qscale=1,
+                                **{
+                                    'color_primaries': 'bt709',
+                                    'color_trc': 'bt709',
+                                    'colorspace': 'bt709'
+                                })
         
+        update_progress(80, "Running FFmpeg")
         ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
         
-        logger.info("Video creation completed")
+        update_progress(95, "Cleaning up")
         shutil.rmtree(frames_dir, ignore_errors=True)
         gc.collect()
         
+        update_progress(100, "Completed")
         return output_path
         
     except Exception as e:
         logger.error(f"Error in create_video: {str(e)}")
+        update_progress(0, f"Error: {str(e)}")
         raise
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', version=APP_VERSION)
+
+@app.route('/progress')
+def get_progress():
+    global conversion_progress
+    with progress_lock:
+        progress = conversion_progress
+    return jsonify({'progress': progress})
 
 @app.route('/convert', methods=['POST'])
 def convert():
@@ -137,43 +197,50 @@ def convert():
     if not files:
         return jsonify({'error': 'No files selected'}), 400
     
-    # Limit number of files
-    max_files = 100  # Set a reasonable limit
-    if len(files) > max_files:
-        return jsonify({'error': f'Too many files. Maximum allowed is {max_files}'}), 400
+    if len(files) > 1000:
+        return jsonify({'error': 'Maximum 1000 files allowed'}), 400
     
-    # Create temporary directory
+    # Create session-specific temp directory
     temp_dir = tempfile.mkdtemp(dir=app.config['TEMP_FOLDER'])
-    image_files = []
+    logger.info(f"Created temp directory: {temp_dir}")
     
     try:
-        total_size = 0
+        update_progress(0, "Processing files")
+        
+        # Collect and sort files
+        file_data = []
         for file in files:
             if file and allowed_file(file.filename):
-                # Check individual file size
-                file.seek(0, os.SEEK_END)
-                size = file.tell()
-                file.seek(0)
-                total_size += size
-                
-                if total_size > app.config['MAX_CONTENT_LENGTH']:
-                    return jsonify({'error': 'Total file size too large'}), 400
-                
-                filename = secure_filename(file.filename)
-                filepath = os.path.join(temp_dir, filename)
-                file.save(filepath)
-                image_files.append(filepath)
+                try:
+                    # Extract number from filename
+                    number = int(''.join(filter(str.isdigit, file.filename)))
+                    file_data.append((number, file))
+                except ValueError:
+                    logger.warning(f"Could not extract number from filename: {file.filename}")
+                    continue
         
-        if not image_files:
-            return jsonify({'error': 'No valid PNG files uploaded'}), 400
+        if not file_data:
+            return jsonify({'error': 'No valid PNG files found'}), 400
         
-        # Sort files
-        image_files.sort()
+        # Sort by frame number
+        file_data.sort(key=lambda x: x[0])
+        logger.info(f"Sorted {len(file_data)} files")
+        
+        # Save files in order
+        image_files = []
+        for i, (_, file) in enumerate(file_data):
+            filename = f'frame_{i:06d}.png'
+            filepath = os.path.join(temp_dir, filename)
+            file.save(filepath)
+            image_files.append(filepath)
+            logger.info(f"Saved file {i+1}/{len(file_data)}: {filepath}")
         
         # Create output path
         output_filename = f'output.{format}'
         output_path = os.path.join(temp_dir, output_filename)
+        logger.info(f"Output will be saved to: {output_path}")
         
+        # Create video
         final_path = create_video(image_files, output_path, fps=30, format=format)
         
         return send_file(
@@ -188,13 +255,22 @@ def convert():
         return jsonify({'error': str(e)}), 500
     
     finally:
-        # Cleanup
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        gc.collect()
+        try:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            gc.collect()
+        except Exception as e:
+            logger.error(f"Cleanup error: {str(e)}")
 
 if __name__ == '__main__':
-    # Use environment variables for configuration
     port = int(os.environ.get('PORT', 8080))
     debug = os.environ.get('FLASK_ENV') == 'development'
+    
+    logger.info(f"=== PNG to Video Converter v{APP_VERSION} ===")
+    logger.info(f"Environment: {'Development' if debug else 'Production'}")
+    logger.info(f"Platform: {platform.system()} {platform.release()}")
+    logger.info(f"Python: {platform.python_version()}")
+    logger.info(f"Upload directory: {app.config['UPLOAD_FOLDER']}")
+    logger.info(f"Temp directory: {app.config['TEMP_FOLDER']}")
+    logger.info("=====================================")
     
     app.run(host='0.0.0.0', port=port, debug=debug) 
