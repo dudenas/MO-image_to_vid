@@ -1,1 +1,1 @@
-web: gunicorn app:app --timeout 300 --workers 1 --threads 2 --max-requests 1 --preload 
+web: gunicorn app:app --timeout 600 --workers 1 --threads 1 --max-requests 1 --preload --log-level debug 

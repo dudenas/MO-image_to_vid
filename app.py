@@ -57,14 +57,22 @@ def create_video(image_files, output_path, fps=30, format='mp4'):
         # Get the first image to determine dimensions
         first_image = Image.open(image_files[0])
         width, height = first_image.size
-        first_image.close()  # Close image after getting dimensions
+        first_image.close()
+        
+        # Reduce image dimensions if too large
+        max_dimension = 1280  # Limit maximum dimension
+        if width > max_dimension or height > max_dimension:
+            scale = max_dimension / max(width, height)
+            width = int(width * scale)
+            height = int(height * scale)
+            logger.info(f"Resizing images to {width}x{height}")
         
         temp_dir = os.path.dirname(output_path)
         frames_dir = os.path.join(temp_dir, 'frames')
         os.makedirs(frames_dir, exist_ok=True)
         
-        # Process images in smaller batches
-        batch_size = 10
+        # Process images in very small batches
+        batch_size = 5  # Reduced batch size
         for i in range(0, len(image_files), batch_size):
             batch = image_files[i:i + batch_size]
             for j, image_path in enumerate(batch):
@@ -72,37 +80,39 @@ def create_video(image_files, output_path, fps=30, format='mp4'):
                 logger.info(f"Processing frame {frame_index + 1}/{len(image_files)}")
                 
                 with Image.open(image_path) as img:
+                    # Resize if needed
+                    if img.size != (width, height):
+                        img = img.resize((width, height), Image.Resampling.LANCZOS)
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                     frame_path = os.path.join(frames_dir, f'frame_{frame_index:06d}.png')
-                    img.save(frame_path, 'PNG', optimize=False)
+                    img.save(frame_path, 'PNG', optimize=True, quality=85)
                 
-                gc.collect()  # Force garbage collection after each frame
+                # Clean up memory
+                gc.collect()
         
         logger.info("Starting FFmpeg encoding")
         
-        # FFmpeg encoding with reduced quality for free tier
+        # FFmpeg encoding with more aggressive compression
         stream = ffmpeg.input(os.path.join(frames_dir, 'frame_%06d.png'), framerate=fps)
         
         if format == 'mp4':
             stream = ffmpeg.output(stream, output_path,
                                 vcodec='libx264',
                                 pix_fmt='yuv420p',
-                                preset='ultrafast',  # Faster encoding
-                                crf=23,  # Reduced quality
+                                preset='veryfast',  # Even faster encoding
+                                crf=28,  # More compression
                                 movflags='+faststart')
         else:  # mov
             stream = ffmpeg.output(stream, output_path,
                                 vcodec='prores_ks',
-                                pix_fmt='yuv422p',  # Reduced from yuv422p10le
-                                profile=0,  # Proxy profile for smaller size
-                                qscale=11)  # Reduced quality
+                                pix_fmt='yuv420p',  # Less color data
+                                profile=0,  # Proxy profile
+                                qscale=15)  # More compression
         
         ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
         
         logger.info("Video creation completed")
-        
-        # Cleanup
         shutil.rmtree(frames_dir, ignore_errors=True)
         gc.collect()
         
@@ -123,20 +133,32 @@ def convert():
     
     files = request.files.getlist('files[]')
     format = request.form.get('format', 'mp4')
-    total_files = int(request.form.get('total_files', 0))
-    chunk_start = int(request.form.get('chunk_start', 0))
     
     if not files:
         return jsonify({'error': 'No files selected'}), 400
     
-    # Create temporary directory for this conversion
+    # Limit number of files
+    max_files = 100  # Set a reasonable limit
+    if len(files) > max_files:
+        return jsonify({'error': f'Too many files. Maximum allowed is {max_files}'}), 400
+    
+    # Create temporary directory
     temp_dir = tempfile.mkdtemp(dir=app.config['TEMP_FOLDER'])
     image_files = []
     
     try:
-        # Save uploaded files
+        total_size = 0
         for file in files:
             if file and allowed_file(file.filename):
+                # Check individual file size
+                file.seek(0, os.SEEK_END)
+                size = file.tell()
+                file.seek(0)
+                total_size += size
+                
+                if total_size > app.config['MAX_CONTENT_LENGTH']:
+                    return jsonify({'error': 'Total file size too large'}), 400
+                
                 filename = secure_filename(file.filename)
                 filepath = os.path.join(temp_dir, filename)
                 file.save(filepath)
@@ -145,35 +167,15 @@ def convert():
         if not image_files:
             return jsonify({'error': 'No valid PNG files uploaded'}), 400
         
-        # Sort files to ensure proper sequence
+        # Sort files
         image_files.sort()
         
-        # If this is not the last chunk, return success without video
-        if chunk_start + len(files) < total_files:
-            return jsonify({'status': 'chunk_uploaded'}), 200
-        
-        # Get all files from temp directory for final processing
-        all_files = []
-        for root, _, filenames in os.walk(temp_dir):
-            for filename in filenames:
-                if filename.lower().endswith('.png'):
-                    all_files.append(os.path.join(root, filename))
-        
-        # Sort all files to ensure proper sequence
-        all_files.sort()
-        
-        # Create output filename and path
+        # Create output path
         output_filename = f'output.{format}'
         output_path = os.path.join(temp_dir, output_filename)
         
-        # Convert images to video with fixed 30 FPS
-        final_path = create_video(all_files, output_path, fps=30, format=format)
+        final_path = create_video(image_files, output_path, fps=30, format=format)
         
-        # Verify the file exists and has size
-        if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
-            return jsonify({'error': 'Video creation failed'}), 500
-        
-        # Send the file to user
         return send_file(
             final_path,
             as_attachment=True,
@@ -182,11 +184,13 @@ def convert():
         )
     
     except Exception as e:
+        logger.error(f"Conversion error: {str(e)}")
         return jsonify({'error': str(e)}), 500
     
     finally:
-        # Cleanup temporary directory
+        # Cleanup
         shutil.rmtree(temp_dir, ignore_errors=True)
+        gc.collect()
 
 if __name__ == '__main__':
     # Use environment variables for configuration
