@@ -9,6 +9,10 @@ from PIL import Image
 import tempfile
 import shutil
 
+# Add FFmpeg to PATH
+vendor_ffmpeg = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vendor/ffmpeg')
+os.environ['PATH'] = f"{vendor_ffmpeg}:{os.environ['PATH']}"
+
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024  # 512MB max file size
