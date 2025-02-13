@@ -1,0 +1,8 @@
+Flask==3.0.2
+opencv-python==4.9.0.80
+Pillow==10.2.0
+numpy==1.26.4
+ffmpeg-python==0.2.0
+Werkzeug==3.0.1
+flask-cors==4.0.0
+gunicorn==21.2.0 

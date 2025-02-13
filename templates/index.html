@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PNG Sequence to Video Converter</title>
+    <!-- Add Tailwind with dark mode enabled -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Set dark theme as default if no preference is stored
+        if (!localStorage.theme) {
+            localStorage.theme = 'dark';
+            document.documentElement.classList.add('dark');
+        }
+
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {}
+            }
+        }
+    </script>
+    <style type="text/tailwindcss">
+        @layer base {
+            html.dark {
+                @apply bg-gray-900;
+            }
+            html.dark body {
+                @apply bg-gray-900;
+            }
+        }
+        .drag-area {
+            border: 2px dashed #4F46E5;
+            transition: all 0.3s ease;
+        }
+
+        .dark .drag-area {
+            border-color: #818CF8;
+        }
+
+        .drag-area.active {
+            border-color: #818CF8;
+            background-color: #EEF2FF;
+        }
+
+        .dark .drag-area.active {
+            border-color: #6366F1;
+            background-color: rgba(99, 102, 241, 0.1);
+        }
+
+        .preview-image {
+            width: 100px;
+            height: 100px;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+
+<body class="min-h-screen bg-white dark:bg-gray-900">
+    <div class="container mx-auto px-4 py-8">
+        <div class="max-w-3xl mx-auto relative">
+            <!-- Theme Toggle Button -->
+            <button id="themeToggle"
+                class="absolute right-0 top-0 p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors">
+                <!-- Sun icon -->
+                <svg xmlns="http://www.w3.org/2000/svg"
+                    class="h-6 w-6 text-gray-700 dark:text-gray-300 hidden dark:block" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                <!-- Moon icon -->
+                <svg xmlns="http://www.w3.org/2000/svg"
+                    class="h-6 w-6 text-gray-700 dark:text-gray-300 block dark:hidden" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+            </button>
+
+            <h1 class="text-4xl font-bold text-center text-gray-800 dark:text-white mb-8">PNG Sequence to Video
+                Converter</h1>
+
+            <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
+                <form id="uploadForm" class="space-y-6">
+                    <div class="drag-area p-8 rounded-lg text-center cursor-pointer">
+                        <div class="space-y-4">
+                            <svg xmlns="http://www.w3.org/2000/svg"
+                                class="mx-auto h-12 w-12 text-indigo-500 dark:text-indigo-400" fill="none"
+                                viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                            <div class="text-lg text-gray-600 dark:text-gray-300">Drag & Drop your folder with PNG files
+                                here</div>
+                            <div class="text-sm text-gray-500 dark:text-gray-400">or</div>
+                            <button type="button" id="browseBtn"
+                                class="bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 text-white px-4 py-2 rounded-md transition-colors">
+                                Browse Folder
+                            </button>
+                            <input type="file" id="fileInput" webkitdirectory directory multiple class="hidden">
+                        </div>
+                    </div>
+
+                    <div id="fileInfo" class="hidden">
+                        <div class="bg-gray-50 dark:bg-gray-700 rounded-lg p-4 space-y-2">
+                            <div class="flex justify-between items-center">
+                                <span class="text-gray-700 dark:text-gray-300">Number of PNG files:</span>
+                                <span id="fileCount" class="font-semibold text-indigo-600 dark:text-indigo-400">0</span>
+                            </div>
+                            <div class="flex justify-between items-center">
+                                <span class="text-gray-700 dark:text-gray-300">Video Duration:</span>
+                                <span id="duration" class="font-semibold text-indigo-600 dark:text-indigo-400">0s</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Output
+                            Format</label>
+                        <select name="format"
+                            class="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-700 dark:text-gray-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400">
+                            <option value="mp4">MP4</option>
+                            <option value="mov">MOV (ProRes)</option>
+                        </select>
+                    </div>
+
+                    <button type="submit"
+                        class="w-full bg-indigo-600 hover:bg-indigo-700 dark:bg-indigo-500 dark:hover:bg-indigo-600 text-white px-6 py-3 rounded-md transition-colors">
+                        Convert to Video
+                    </button>
+                </form>
+            </div>
+
+            <div id="progress" class="hidden">
+                <div class="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6">
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-center space-x-3">
+                            <svg class="animate-spin h-5 w-5 text-indigo-600 dark:text-indigo-400"
+                                xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                    stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                                </path>
+                            </svg>
+                            <span id="progressText" class="text-gray-700 dark:text-gray-300">Processing...</span>
+                        </div>
+                        <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5">
+                            <div id="progressBar"
+                                class="bg-indigo-600 dark:bg-indigo-500 h-2.5 rounded-full transition-all duration-300"
+                                style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Theme toggle functionality
+        const themeToggle = document.getElementById('themeToggle');
+
+        function updateTheme(isDark) {
+            if (isDark) {
+                document.documentElement.classList.add('dark');
+                localStorage.theme = 'dark';
+            } else {
+                document.documentElement.classList.remove('dark');
+                localStorage.theme = 'light';
+            }
+        }
+
+        // Initialize theme - always default to dark if no preference is set
+        const prefersDark = !localStorage.theme || localStorage.theme === 'dark';
+        updateTheme(prefersDark);
+
+        // Toggle theme
+        themeToggle.addEventListener('click', () => {
+            const isDark = document.documentElement.classList.contains('dark');
+            updateTheme(!isDark);
+        });
+
+        const form = document.getElementById('uploadForm');
+        const dragArea = document.querySelector('.drag-area');
+        const fileInput = document.getElementById('fileInput');
+        const browseBtn = document.getElementById('browseBtn');
+        const fileInfo = document.getElementById('fileInfo');
+        const fileCount = document.getElementById('fileCount');
+        const duration = document.getElementById('duration');
+        const progress = document.getElementById('progress');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+        const FPS = 30; // Fixed FPS
+
+        // Trigger file input when browse button is clicked
+        browseBtn.addEventListener('click', async () => {
+            try {
+                // Request permission to access files
+                if ('showDirectoryPicker' in window) {
+                    console.log('Using modern directory picker API');
+                    const dirHandle = await window.showDirectoryPicker();
+                    const files = [];
+
+                    progressText.textContent = 'Scanning folder...';
+                    progress.classList.remove('hidden');
+
+                    // Recursively get all files from the directory
+                    async function getAllFiles(dirHandle) {
+                        for await (const entry of dirHandle.values()) {
+                            if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.png')) {
+                                const file = await entry.getFile();
+                                files.push(file);
+                            } else if (entry.kind === 'directory') {
+                                await getAllFiles(entry);
+                            }
+                        }
+                    }
+
+                    await getAllFiles(dirHandle);
+                    console.log('Found files:', files.map(f => f.name));
+
+                    if (files.length === 0) {
+                        progress.classList.add('hidden');
+                        alert('No PNG files found in the selected folder');
+                        return;
+                    }
+
+                    // Sort files by name to ensure correct sequence
+                    files.sort((a, b) => {
+                        // Remove any non-numeric characters and compare as numbers
+                        const aNum = parseInt(a.name.replace(/\D/g, ''));
+                        const bNum = parseInt(b.name.replace(/\D/g, ''));
+                        return aNum - bNum;
+                    });
+
+                    // Create a DataTransfer object to simulate file input
+                    const dataTransfer = new DataTransfer();
+                    files.forEach(file => dataTransfer.items.add(file));
+
+                    // Update the file input
+                    fileInput.files = dataTransfer.files;
+                    handleFiles();
+                } else {
+                    console.log('Using legacy file input');
+                    fileInput.click();
+                }
+            } catch (error) {
+                console.error('Error accessing folder:', error);
+                progress.classList.add('hidden');
+                if (error.name === 'AbortError') {
+                    // User cancelled the folder selection
+                    return;
+                }
+                alert('Error accessing folder. Please try again.');
+            }
+        });
+
+        // Handle file selection from the legacy input
+        fileInput.addEventListener('change', () => {
+            const files = Array.from(fileInput.files)
+                .filter(file => file.name.toLowerCase().endsWith('.png'))
+                .sort((a, b) => {
+                    // Remove any non-numeric characters and compare as numbers
+                    const aNum = parseInt(a.name.replace(/\D/g, ''));
+                    const bNum = parseInt(b.name.replace(/\D/g, ''));
+                    return aNum - bNum;
+                });
+
+            console.log('Files after sorting:', files.map(f => f.name));
+            handleFiles();
+        });
+
+        // Drag and drop handlers
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            dragArea.addEventListener(eventName, preventDefaults, false);
+        });
+
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            dragArea.addEventListener(eventName, () => {
+                dragArea.classList.add('active');
+            });
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            dragArea.addEventListener(eventName, () => {
+                dragArea.classList.remove('active');
+            });
+        });
+
+        dragArea.addEventListener('drop', async (e) => {
+            const items = e.dataTransfer.items;
+            if (items && items.length > 0) {
+                if ('getAsFileSystemHandle' in items[0]) {
+                    const handle = await items[0].getAsFileSystemHandle();
+                    if (handle.kind === 'directory') {
+                        const files = [];
+                        progressText.textContent = 'Scanning folder...';
+                        progress.classList.remove('hidden');
+
+                        try {
+                            for await (const entry of handle.values()) {
+                                if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.png')) {
+                                    const file = await entry.getFile();
+                                    files.push(file);
+                                }
+                            }
+
+                            // Sort files numerically
+                            files.sort((a, b) => {
+                                const aNum = parseInt(a.name.replace(/\D/g, ''));
+                                const bNum = parseInt(b.name.replace(/\D/g, ''));
+                                return aNum - bNum;
+                            });
+
+                            console.log('Sorted files:', files.map(f => f.name));
+
+                            const dataTransfer = new DataTransfer();
+                            files.forEach(file => dataTransfer.items.add(file));
+
+                            fileInput.files = dataTransfer.files;
+                            handleFiles();
+                        } catch (error) {
+                            console.error('Error processing dropped folder:', error);
+                            progress.classList.add('hidden');
+                            alert('Error processing folder. Please try again.');
+                        }
+                    }
+                } else {
+                    const item = items[0].webkitGetAsEntry();
+                    if (item && item.isDirectory) {
+                        traverseDirectory(item);
+                    }
+                }
+            }
+        });
+
+        function traverseDirectory(item) {
+            const reader = item.createReader();
+            reader.readEntries((entries) => {
+                const pngFiles = entries.filter(entry =>
+                    entry.isFile && entry.name.toLowerCase().endsWith('.png')
+                );
+                updateFileInfo(pngFiles.length);
+            });
+        }
+
+        function handleFiles() {
+            console.log('Starting file handling...');
+            const files = Array.from(fileInput.files);
+            console.log('Total files found:', files.length);
+            console.log('File names:', files.map(f => f.name));
+
+            // Show progress immediately
+            progress.classList.remove('hidden');
+            progressText.textContent = 'Scanning files...';
+            progressBar.style.width = '0%';
+
+            // Count PNG files
+            const pngFiles = files.filter(file =>
+                file.name.toLowerCase().endsWith('.png')
+            );
+            console.log('PNG files found:', pngFiles.length);
+            console.log('PNG file names:', pngFiles.map(f => f.name));
+
+            // Update UI with file count
+            fileInfo.classList.remove('hidden');
+            fileCount.textContent = pngFiles.length;
+
+            // Calculate duration
+            const durationInSeconds = pngFiles.length / FPS;
+            const minutes = Math.floor(durationInSeconds / 60);
+            const seconds = Math.round(durationInSeconds % 60);
+            duration.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+            // Hide progress
+            progress.classList.add('hidden');
+
+            if (pngFiles.length === 0) {
+                alert('No PNG files found in the selected folder');
+            }
+        }
+
+        function updateProgress(current, total, stage) {
+            const percent = (current / total) * 100;
+            progressBar.style.width = `${percent}%`;
+            progressText.textContent = `${stage} (${Math.round(percent)}%)`;
+        }
+
+        async function uploadInChunks(files, chunkSize = 3) {
+            console.log('Starting upload of', files.length, 'files');
+            const format = form.format.value;
+            const totalFiles = files.length;
+            let processed = 0;
+
+            progressText.textContent = 'Starting upload...';
+            progressBar.style.width = '0%';
+
+            try {
+                // Split files into chunks
+                for (let i = 0; i < files.length; i += chunkSize) {
+                    console.log('Processing chunk', Math.floor(i / chunkSize) + 1);
+                    const chunk = files.slice(i, i + chunkSize);
+                    const formData = new FormData();
+
+                    chunk.forEach(file => {
+                        formData.append('files[]', file);
+                    });
+                    formData.append('format', format);
+                    formData.append('total_files', totalFiles.toString());
+                    formData.append('chunk_start', i.toString());
+
+                    updateProgress(processed, totalFiles, 'Uploading files');
+
+                    const response = await fetch('/convert', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.error || 'Upload failed');
+                    }
+
+                    processed += chunk.length;
+                    console.log('Processed', processed, 'of', totalFiles, 'files');
+                    updateProgress(processed, totalFiles, 'Uploading files');
+
+                    // If this is the last chunk, handle the response
+                    if (processed >= totalFiles) {
+                        console.log('Processing final response');
+                        progressText.textContent = 'Creating video...';
+                        const blob = await response.blob();
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `output.${format}`;
+                        document.body.appendChild(a);
+                        a.click();
+                        window.URL.revokeObjectURL(url);
+                        a.remove();
+                    }
+
+                    // Add a small delay between chunks
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                }
+            } catch (error) {
+                console.error('Error during upload:', error);
+                throw error;
+            }
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            console.log('Form submitted');
+
+            try {
+                // Get files and ensure proper numeric sorting
+                const files = Array.from(fileInput.files)
+                    .filter(file => file.name.toLowerCase().endsWith('.png'))
+                    .sort((a, b) => {
+                        const aNum = parseInt(a.name.replace(/\D/g, ''));
+                        const bNum = parseInt(b.name.replace(/\D/g, ''));
+                        return aNum - bNum;
+                    });
+
+                console.log('Found', files.length, 'PNG files to process');
+                console.log('Files to process:', files.map(f => f.name));
+
+                if (files.length === 0) {
+                    alert('Please select a folder with PNG files');
+                    return;
+                }
+
+                progress.classList.remove('hidden');
+                form.classList.add('opacity-50', 'pointer-events-none');
+                progressText.textContent = 'Preparing files...';
+                progressBar.style.width = '0%';
+
+                // Create a new FormData with all files at once
+                const formData = new FormData();
+                files.forEach((file, index) => {
+                    // Add index to filename to ensure order is preserved
+                    formData.append('files[]', file,
+                        `frame_${index.toString().padStart(6, '0')}.png`);
+                });
+                formData.append('format', form.format.value);
+                formData.append('total_files', files.length.toString());
+
+                // Single request with all files
+                const xhr = new XMLHttpRequest();
+
+                // Track upload progress
+                xhr.upload.onprogress = (event) => {
+                    if (event.lengthComputable) {
+                        const percentComplete = (event.loaded / event.total) * 100;
+                        progressBar.style.width = percentComplete + '%';
+                        if (percentComplete === 100) {
+                            progressText.textContent = 'Processing...';
+                        } else {
+                            progressText.textContent =
+                                `Uploading files... ${Math.round(percentComplete)}%`;
+                        }
+                    }
+                };
+
+                // Add upload complete handler
+                xhr.upload.onload = () => {
+                    progressText.textContent = 'Processing...';
+                    progressBar.style.width = '100%';
+                };
+
+                // Handle the response
+                xhr.onload = function () {
+                    if (xhr.status === 200) {
+                        console.log('Processing final response');
+                        progressText.textContent = 'Creating video...';
+                        progressBar.style.width = '100%';
+
+                        const blob = new Blob([xhr.response], {
+                            type: `video/${form.format.value}`
+                        });
+                        const url = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `output.${form.format.value}`;
+
+                        // Add event listener to track when download starts
+                        a.onclick = () => {
+                            progressText.textContent = 'Download started!';
+                            // Clean up after a short delay
+                            setTimeout(() => {
+                                progress.classList.add('hidden');
+                                form.classList.remove('opacity-50', 'pointer-events-none');
+                                window.URL.revokeObjectURL(url);
+                            }, 1000);
+                        };
+
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+
+                        progressText.textContent = 'Starting download...';
+                    } else {
+                        const error = JSON.parse(xhr.responseText);
+                        throw new Error(error.error || 'Upload failed');
+                    }
+                };
+
+                xhr.onerror = function () {
+                    // Re-enable form on error
+                    form.classList.remove('opacity-50', 'pointer-events-none');
+                    progress.classList.add('hidden');
+                    throw new Error('Network error occurred during upload');
+                };
+
+                // Set up the request
+                xhr.open('POST', '/convert', true);
+                xhr.responseType = 'blob';
+                xhr.send(formData);
+
+                // Remove the Promise wrapper since we're handling everything in onload
+                console.log('Request sent, waiting for response...');
+            } catch (error) {
+                console.error('Error:', error);
+                // Re-enable form on error
+                form.classList.remove('opacity-50', 'pointer-events-none');
+                progress.classList.add('hidden');
+                alert(error.message || 'An error occurred during conversion');
+            }
+        });
+    </script>
+</body>
+
+</html>
