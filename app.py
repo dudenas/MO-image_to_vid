@@ -22,8 +22,8 @@ os.environ['PATH'] = f"{vendor_ffmpeg}:{os.environ['PATH']}"
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # Reduce to 256MB max file size
-app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'uploads')
-app.config['TEMP_FOLDER'] = os.path.join(tempfile.gettempdir(), 'temp')
+app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
+app.config['TEMP_FOLDER'] = '/tmp/temp'
 
 # Ensure upload and temp directories exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
