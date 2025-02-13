@@ -8,6 +8,12 @@ import ffmpeg
 from PIL import Image
 import tempfile
 import shutil
+import logging
+import gc
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Add FFmpeg to PATH
 vendor_ffmpeg = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vendor/ffmpeg')
@@ -15,7 +21,7 @@ os.environ['PATH'] = f"{vendor_ffmpeg}:{os.environ['PATH']}"
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
-app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024  # 512MB max file size
+app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # Reduce to 256MB max file size
 app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'uploads')
 app.config['TEMP_FOLDER'] = os.path.join(tempfile.gettempdir(), 'temp')
 
@@ -28,97 +34,83 @@ ALLOWED_EXTENSIONS = {'png'}
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def cleanup_temp_files():
+    """Clean up temporary files and force garbage collection"""
+    try:
+        shutil.rmtree(app.config['UPLOAD_FOLDER'], ignore_errors=True)
+        shutil.rmtree(app.config['TEMP_FOLDER'], ignore_errors=True)
+        os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+        os.makedirs(app.config['TEMP_FOLDER'], exist_ok=True)
+        gc.collect()  # Force garbage collection
+    except Exception as e:
+        logger.error(f"Error during cleanup: {str(e)}")
+
+@app.before_request
+def before_request():
+    """Clean up before each request"""
+    cleanup_temp_files()
+
 def create_video(image_files, output_path, fps=30, format='mp4'):
-    # Get the first image to determine dimensions
-    first_image = Image.open(image_files[0])
-    width, height = first_image.size
-    
-    if format == 'mp4':
-        # For MP4, we'll use FFmpeg directly for better compatibility
+    try:
+        logger.info(f"Starting video creation with {len(image_files)} files")
+        
+        # Get the first image to determine dimensions
+        first_image = Image.open(image_files[0])
+        width, height = first_image.size
+        first_image.close()  # Close image after getting dimensions
+        
         temp_dir = os.path.dirname(output_path)
         frames_dir = os.path.join(temp_dir, 'frames')
         os.makedirs(frames_dir, exist_ok=True)
         
-        # Save frames with proper naming for FFmpeg
-        for i, image_path in enumerate(sorted(image_files)):
-            img = Image.open(image_path)
-            # Convert to RGB if not already
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            # Save as PNG with maximum quality
-            frame_path = os.path.join(frames_dir, f'frame_{i:06d}.png')
-            img.save(frame_path, 'PNG', optimize=False)
+        # Process images in smaller batches
+        batch_size = 10
+        for i in range(0, len(image_files), batch_size):
+            batch = image_files[i:i + batch_size]
+            for j, image_path in enumerate(batch):
+                frame_index = i + j
+                logger.info(f"Processing frame {frame_index + 1}/{len(image_files)}")
+                
+                with Image.open(image_path) as img:
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    frame_path = os.path.join(frames_dir, f'frame_{frame_index:06d}.png')
+                    img.save(frame_path, 'PNG', optimize=False)
+                
+                gc.collect()  # Force garbage collection after each frame
         
-        # Use FFmpeg to create MP4 with H.264 codec and proper color handling
-        stream = ffmpeg.input(os.path.join(frames_dir, 'frame_%06d.png'), 
-                            framerate=fps)
+        logger.info("Starting FFmpeg encoding")
         
-        # Instagram-compatible settings with good color reproduction
-        stream = ffmpeg.output(stream, output_path,
-                             vcodec='libx264',
-                             pix_fmt='yuv420p',  # Required for maximum compatibility
-                             preset='slow',      # Better quality
-                             crf=18,            # High quality (17-18 is visually lossless)
-                             profile='high',    # High profile for better quality
-                             level='4.0',       # Compatible level
-                             movflags='+faststart',
-                             **{
-                                 'color_primaries': 'bt709',
-                                 'color_trc': 'bt709',
-                                 'colorspace': 'bt709',
-                                 'x264-params': (
-                                     'colorprim=bt709:'
-                                     'transfer=bt709:'
-                                     'colormatrix=bt709:'
-                                     'force-cfr=1:'
-                                     'keyint=48:'
-                                     'min-keyint=48:'
-                                     'no-scenecut=1'
-                                 )
-                             })
+        # FFmpeg encoding with reduced quality for free tier
+        stream = ffmpeg.input(os.path.join(frames_dir, 'frame_%06d.png'), framerate=fps)
+        
+        if format == 'mp4':
+            stream = ffmpeg.output(stream, output_path,
+                                vcodec='libx264',
+                                pix_fmt='yuv420p',
+                                preset='ultrafast',  # Faster encoding
+                                crf=23,  # Reduced quality
+                                movflags='+faststart')
+        else:  # mov
+            stream = ffmpeg.output(stream, output_path,
+                                vcodec='prores_ks',
+                                pix_fmt='yuv422p',  # Reduced from yuv422p10le
+                                profile=0,  # Proxy profile for smaller size
+                                qscale=11)  # Reduced quality
         
         ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
         
-        # Cleanup frame directory
-        shutil.rmtree(frames_dir)
+        logger.info("Video creation completed")
         
-    else:  # MOV
-        # For MOV/ProRes, we'll use FFmpeg directly
-        temp_dir = os.path.dirname(output_path)
-        frames_dir = os.path.join(temp_dir, 'frames')
-        os.makedirs(frames_dir, exist_ok=True)
+        # Cleanup
+        shutil.rmtree(frames_dir, ignore_errors=True)
+        gc.collect()
         
-        # Save frames with proper naming for FFmpeg
-        for i, image_path in enumerate(sorted(image_files)):
-            img = Image.open(image_path)
-            # Convert to RGB if not already
-            if img.mode != 'RGB':
-                img = img.convert('RGB')
-            # Save as PNG with maximum quality
-            frame_path = os.path.join(frames_dir, f'frame_{i:06d}.png')
-            img.save(frame_path, 'PNG', optimize=False)
+        return output_path
         
-        # Use FFmpeg to create ProRes MOV with proper color handling
-        stream = ffmpeg.input(os.path.join(frames_dir, 'frame_%06d.png'),
-                            framerate=fps)
-        stream = ffmpeg.output(stream, output_path,
-                             vcodec='prores_ks',
-                             pix_fmt='yuv422p10le',  # 10-bit color depth
-                             profile=3,              # High quality profile
-                             vendor='apl0',          # Apple ProRes
-                             qscale=1,              # Highest quality
-                             **{
-                                 'color_primaries': 'bt709',
-                                 'color_trc': 'bt709',
-                                 'colorspace': 'bt709'
-                             })
-        
-        ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
-        
-        # Cleanup frame directory
-        shutil.rmtree(frames_dir)
-    
-    return output_path
+    except Exception as e:
+        logger.error(f"Error in create_video: {str(e)}")
+        raise
 
 @app.route('/')
 def index():
