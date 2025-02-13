@@ -11,9 +11,9 @@ import shutil
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['TEMP_FOLDER'] = 'temp'
+app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024  # 512MB max file size
+app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'uploads')
+app.config['TEMP_FOLDER'] = os.path.join(tempfile.gettempdir(), 'temp')
 
 # Ensure upload and temp directories exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
