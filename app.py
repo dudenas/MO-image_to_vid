@@ -15,43 +15,21 @@ import json
 import re
 import platform
 import subprocess
+import sys
+from pathlib import Path
 
 # Version number
-APP_VERSION = "1.2.6"  # Fixed server environment paths
+APP_VERSION = "1.2.7"
 
-# Configure logging - simpler format without version
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Function to safely get FFmpeg version
-def get_ffmpeg_version():
-    try:
-        result = subprocess.run(['ffmpeg', '-version'], 
-                              capture_output=True, 
-                              text=True)
-        first_line = result.stdout.split('\n')[0]
-        return first_line
-    except Exception as e:
-        return f"FFmpeg version check failed: {str(e)}"
 
 app = Flask(__name__)
 CORS(app)
-app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024
-
-# Set up temp directories based on environment
-if os.environ.get('FLASK_ENV') == 'development':
-    # Local development - use local temp directory
-    base_temp = os.path.join(os.getcwd(), 'temp')
-    app.config['UPLOAD_FOLDER'] = os.path.join(base_temp, 'uploads')
-    app.config['TEMP_FOLDER'] = os.path.join(base_temp, 'temp')
-else:
-    # Production/Cloud Run - use /tmp
-    app.config['UPLOAD_FOLDER'] = '/tmp/uploads'
-    app.config['TEMP_FOLDER'] = '/tmp/temp'
+app.config['MAX_CONTENT_LENGTH'] = 512 * 1024 * 1024  # 512MB max file size
+app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'uploads')
+app.config['TEMP_FOLDER'] = os.path.join(tempfile.gettempdir(), 'temp')
 
 # Ensure directories exist
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -63,6 +41,20 @@ ALLOWED_EXTENSIONS = {'png'}
 conversion_progress = 0
 progress_lock = Lock()
 
+# Set FFmpeg path - ensure it's absolute
+base_dir = os.path.abspath(os.path.dirname(__file__))
+ffmpeg_dir = os.path.join(base_dir, 'vendor', 'ffmpeg')
+
+# Add FFmpeg to PATH at the beginning to ensure it's found first
+os.environ['PATH'] = f"{ffmpeg_dir}{os.pathsep}{os.environ['PATH']}"
+
+# Log FFmpeg path for debugging
+logger.info(f"FFmpeg directory: {ffmpeg_dir}")
+if os.path.exists(os.path.join(ffmpeg_dir, 'ffmpeg')):
+    logger.info("Found FFmpeg binary in vendor directory")
+else:
+    logger.warning("FFmpeg binary not found in vendor directory")
+
 def update_progress(percent, message=""):
     global conversion_progress
     with progress_lock:
@@ -72,14 +64,39 @@ def update_progress(percent, message=""):
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def get_ffmpeg_path():
+    """Get path to FFmpeg binary"""
+    vendor_ffmpeg = Path(__file__).parent / 'vendor' / 'ffmpeg' / 'ffmpeg'
+    if vendor_ffmpeg.exists():
+        return str(vendor_ffmpeg)
+    return 'ffmpeg'  # Fall back to system FFmpeg
+
+def get_ffmpeg_version():
+    """Get FFmpeg version and verify it's the correct one"""
+    try:
+        result = subprocess.run([get_ffmpeg_path(), '-version'], 
+                              capture_output=True, 
+                              text=True)
+        version = result.stdout.split('\n')[0]
+        logger.info(f"Using FFmpeg: {version}")
+        return version
+    except Exception as e:
+        logger.error(f"Error checking FFmpeg version: {e}")
+        return None
+
 def create_video(image_files, output_path, fps=30, format='mp4'):
     try:
-        # Log FFmpeg version and system info
-        logger.info("=== FFmpeg Info ===")
-        logger.info(f"FFmpeg version: {get_ffmpeg_version()}")
+        # Log environment info
+        logger.info("\n=== Environment Info ===")
         logger.info(f"Platform: {platform.system()} {platform.release()}")
-        logger.info(f"Input files: {len(image_files)} PNG files")
+        logger.info(f"Python: {platform.python_version()}")
+        logger.info(f"FFmpeg: {get_ffmpeg_version()}")
+        logger.info(f"Processing {len(image_files)} files")
         logger.info(f"Output format: {format}")
+        logger.info(f"Temp directory: {os.path.dirname(output_path)}")
+        logger.info("======================\n")
+
+        update_progress(0, "Starting video creation")
         
         # Get dimensions
         first_image = Image.open(image_files[0])
@@ -102,15 +119,17 @@ def create_video(image_files, output_path, fps=30, format='mp4'):
                     img = img.convert('RGB')
                 frame_path = os.path.join(frames_dir, f'frame_{i:06d}.png')
                 img.save(frame_path, 'PNG', optimize=False)
-            gc.collect()
         
         update_progress(70, "Starting video encoding")
         
-        # Use FFmpeg with original settings that worked well
-        stream = ffmpeg.input(os.path.join(frames_dir, 'frame_%06d.png'), 
-                            framerate=fps)
+        # FFmpeg settings
+        logger.info("=== FFmpeg Settings ===")
+        input_path = os.path.join(frames_dir, 'frame_%06d.png')
+        logger.info(f"Input pattern: {input_path}")
+        stream = ffmpeg.input(input_path, framerate=fps)
         
         if format == 'mp4':
+            logger.info("Creating MP4 with H.264...")
             stream = ffmpeg.output(stream, output_path,
                                 vcodec='libx264',
                                 pix_fmt='yuv420p',
@@ -133,21 +152,8 @@ def create_video(image_files, output_path, fps=30, format='mp4'):
                                         'no-scenecut=1'
                                     )
                                 })
-            
-            # Log the exact command
-            cmd = ffmpeg.compile(stream)
-            logger.info("=== FFmpeg Command ===")
-            logger.info(' '.join(cmd))
-            
-            # Run FFmpeg and capture output
-            try:
-                out, err = ffmpeg.run(stream, capture_stdout=True, capture_stderr=True)
-                logger.info("=== FFmpeg Output ===")
-                logger.info(err.decode())
-            except ffmpeg.Error as e:
-                logger.error(f"FFmpeg error: {e.stderr.decode() if e.stderr else str(e)}")
-                raise
-        else:  # mov
+        else:  # MOV
+            logger.info("Creating MOV with ProRes...")
             stream = ffmpeg.output(stream, output_path,
                                 vcodec='prores_ks',
                                 pix_fmt='yuv422p10le',
@@ -160,12 +166,23 @@ def create_video(image_files, output_path, fps=30, format='mp4'):
                                     'colorspace': 'bt709'
                                 })
         
+        # Log FFmpeg command
+        cmd = ffmpeg.compile(stream)
+        logger.info("FFmpeg command:")
+        logger.info(' '.join(cmd))
+        
         update_progress(80, "Running FFmpeg")
-        ffmpeg.run(stream, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+        try:
+            out, err = ffmpeg.run(stream, capture_stdout=True, capture_stderr=True)
+            logger.info("=== FFmpeg Output ===")
+            logger.info(err.decode())
+        except ffmpeg.Error as e:
+            logger.error("=== FFmpeg Error ===")
+            logger.error(e.stderr.decode())
+            raise
         
         update_progress(95, "Cleaning up")
-        shutil.rmtree(frames_dir, ignore_errors=True)
-        gc.collect()
+        shutil.rmtree(frames_dir)
         
         update_progress(100, "Completed")
         return output_path
@@ -265,7 +282,11 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     debug = os.environ.get('FLASK_ENV') == 'development'
     
-    logger.info(f"=== PNG to Video Converter v{APP_VERSION} ===")
+    logger.info(f"=== Starting PNG to Video Converter ===")
+    logger.info(f"Version: {APP_VERSION}")
+    get_ffmpeg_version()  # Log FFmpeg version at startup
+    logger.info("=======================================")
+    
     logger.info(f"Environment: {'Development' if debug else 'Production'}")
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"Python: {platform.python_version()}")

@@ -1,0 +1,44 @@
+{
+    "name": "png-to-video",
+    "version": "1.2.6",
+    "description": "PNG Sequence to Video Converter",
+    "main": "main.js",
+    "scripts": {
+        "start": "electron .",
+        "build": "electron-builder",
+        "build:mac": "electron-builder --mac",
+        "build:win": "electron-builder --win"
+    },
+    "dependencies": {
+        "electron-is-dev": "^2.0.0",
+        "portfinder": "^1.0.32"
+    },
+    "devDependencies": {
+        "electron": "^22.0.0",
+        "electron-builder": "^24.0.0"
+    },
+    "build": {
+        "appId": "com.pngtovideo.app",
+        "productName": "PNG to Video",
+        "extraResources": [{
+            "from": "flask-dist",
+            "to": "flask",
+            "filter": ["**/*"]
+        }],
+        "mac": {
+            "category": "public.app-category.video",
+            "target": ["dmg"],
+            "icon": "build/icon.icns"
+        },
+        "win": {
+            "target": ["nsis"],
+            "icon": "build/icon.ico"
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true
+        }
+    }
+}
