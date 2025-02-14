@@ -17,6 +17,8 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+import threading
+from time import sleep
 
 # Version number
 APP_VERSION = "1.2.7"
@@ -56,6 +58,7 @@ else:
     logger.warning("FFmpeg binary not found in vendor directory")
 
 def update_progress(percent, message=""):
+    """Update progress and log it"""
     global conversion_progress
     with progress_lock:
         conversion_progress = percent
@@ -86,31 +89,22 @@ def get_ffmpeg_version():
 
 def create_video(image_files, output_path, fps=30, format='mp4'):
     try:
-        # Log environment info
-        logger.info("\n=== Environment Info ===")
-        logger.info(f"Platform: {platform.system()} {platform.release()}")
-        logger.info(f"Python: {platform.python_version()}")
-        logger.info(f"FFmpeg: {get_ffmpeg_version()}")
-        logger.info(f"Processing {len(image_files)} files")
-        logger.info(f"Output format: {format}")
-        logger.info(f"Temp directory: {os.path.dirname(output_path)}")
-        logger.info("======================\n")
-
+        # Reset progress at start
         update_progress(0, "Starting video creation")
         
         # Get dimensions
         first_image = Image.open(image_files[0])
         width, height = first_image.size
-        logger.info(f"Image dimensions: {width}x{height}")
         first_image.close()
         
         temp_dir = os.path.dirname(output_path)
         frames_dir = os.path.join(temp_dir, 'frames')
         os.makedirs(frames_dir, exist_ok=True)
         
-        # Process frames
+        # Process frames with progress updates
         total_frames = len(image_files)
         for i, image_path in enumerate(sorted(image_files)):
+            # Update progress for frame processing (0-60%)
             progress = (i + 1) / total_frames * 60
             update_progress(progress, f"Processing frame {i + 1}/{total_frames}")
             
@@ -120,6 +114,7 @@ def create_video(image_files, output_path, fps=30, format='mp4'):
                 frame_path = os.path.join(frames_dir, f'frame_{i:06d}.png')
                 img.save(frame_path, 'PNG', optimize=False)
         
+        # Update progress for FFmpeg start
         update_progress(70, "Starting video encoding")
         
         # FFmpeg settings
@@ -171,20 +166,42 @@ def create_video(image_files, output_path, fps=30, format='mp4'):
         logger.info("FFmpeg command:")
         logger.info(' '.join(cmd))
         
-        update_progress(80, "Running FFmpeg")
+        # Run FFmpeg with progress monitoring
         try:
-            out, err = ffmpeg.run(stream, capture_stdout=True, capture_stderr=True)
-            logger.info("=== FFmpeg Output ===")
-            logger.info(err.decode())
-        except ffmpeg.Error as e:
-            logger.error("=== FFmpeg Error ===")
-            logger.error(e.stderr.decode())
+            process = subprocess.Popen(
+                ffmpeg.compile(stream),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True
+            )
+            
+            # Monitor FFmpeg progress
+            while True:
+                line = process.stderr.readline()
+                if not line:
+                    break
+                # Update progress based on FFmpeg output (70-95%)
+                if "frame=" in line:
+                    try:
+                        frame = int(line.split("frame=")[1].split()[0])
+                        encode_progress = min(95, 70 + (frame / total_frames) * 25)
+                        update_progress(encode_progress, "Encoding video")
+                    except:
+                        pass
+            
+            process.wait()
+            if process.returncode != 0:
+                raise Exception("FFmpeg encoding failed")
+        
+        except Exception as e:
+            logger.error(f"FFmpeg error: {str(e)}")
             raise
         
-        update_progress(95, "Cleaning up")
+        # Cleanup and finish
+        update_progress(98, "Cleaning up")
         shutil.rmtree(frames_dir)
         
-        update_progress(100, "Completed")
+        update_progress(100, "Complete")
         return output_path
         
     except Exception as e:
@@ -198,10 +215,10 @@ def index():
 
 @app.route('/progress')
 def get_progress():
+    """Get current progress"""
     global conversion_progress
     with progress_lock:
-        progress = conversion_progress
-    return jsonify({'progress': progress})
+        return jsonify({'progress': conversion_progress})
 
 @app.route('/convert', methods=['POST'])
 def convert():
